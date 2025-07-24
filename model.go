@@ -2,15 +2,13 @@ package main
 
 import (
 	"context"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/technicallyty/xray/chain"
-	"golang.org/x/term"
 )
 
 type tickMsg struct{}
@@ -25,6 +23,9 @@ type Model struct {
 	xrays       []chain.MempoolXray
 	pollingRate time.Duration
 	spinner     spinner.Model
+	viewport    viewport.Model
+	ready       bool
+	content     string // Cache content to avoid resetting viewport
 }
 
 func (m *Model) pollCmd() tea.Cmd {
@@ -46,22 +47,53 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
-	if keyMsg, ok := msg.(tea.KeyMsg); ok {
-		if keyMsg.String() == "q" || keyMsg.String() == "ctrl+c" {
-			return m, tea.Quit
-		}
-	}
+	var (
+		cmd  tea.Cmd
+		cmds []tea.Cmd
+	)
 
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		headerHeight := 4 // Title + help text
+		if !m.ready {
+			m.viewport = viewport.New(msg.Width, msg.Height-headerHeight)
+			m.viewport.YPosition = headerHeight
+			m.ready = true
+			// Initialize content on first render
+			m.updateContent()
+		} else {
+			m.viewport.Width = msg.Width
+			m.viewport.Height = msg.Height - headerHeight
+			// Update content layout when window resizes
+			m.updateContent()
+		}
+
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "esc", "ctrl+c":
+			return m, tea.Quit
+		case "up", "k":
+			m.viewport.LineUp(1)
+		case "down", "j":
+			m.viewport.LineDown(1)
+		case "pgup", "b":
+			m.viewport.HalfViewUp()
+		case "pgdown", "f":
+			m.viewport.HalfViewDown()
+		}
+
 	case tickMsg:
+		// Update content when data changes
+		m.updateContent()
 		cmds = append(cmds, m.pollCmd(), tickCmd(m.pollingRate))
 	case spinner.TickMsg:
-		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		cmds = append(cmds, cmd)
 	}
+
+	// Handle viewport
+	m.viewport, cmd = m.viewport.Update(msg)
+	cmds = append(cmds, cmd)
 
 	return m, tea.Batch(cmds...)
 }
@@ -71,22 +103,14 @@ var (
 	helpStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
 )
 
-func (m Model) View() string {
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render("🌐 Mempool X-Ray"))
-	b.WriteString("\n\n")
-
-	// Calculate boxes per row based on terminal width
+func (m *Model) updateContent() {
+	// Calculate boxes per row based on viewport width
 	const boxWidth = 62
-	terminalWidth := 80 // fallback
-	if width, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
-		terminalWidth = width
+	viewportWidth := m.viewport.Width
+	if viewportWidth < boxWidth {
+		viewportWidth = boxWidth
 	}
-	if terminalWidth < boxWidth {
-		terminalWidth = boxWidth
-	}
-	boxesPerRow := terminalWidth / boxWidth
+	boxesPerRow := viewportWidth / boxWidth
 	if boxesPerRow < 1 {
 		boxesPerRow = 1
 	}
@@ -109,14 +133,28 @@ func (m Model) View() string {
 		}
 	}
 
+	newContent := ""
 	if len(allRows) > 0 {
-		// Join all rows vertically
-		result := lipgloss.JoinVertical(lipgloss.Left, allRows...)
-		b.WriteString(result)
-		b.WriteString("\n")
+		newContent = lipgloss.JoinVertical(lipgloss.Left, allRows...)
 	}
-	// header and status (always 2 lines)
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("Press q or Ctrl+C to quit.\n"))
-	return b.String()
+
+	// Only update if content changed
+	if newContent != m.content {
+		m.content = newContent
+		m.viewport.SetContent(m.content)
+	}
+}
+
+func (m Model) View() string {
+	if !m.ready {
+		return "\n  Initializing..."
+	}
+
+	// Header
+	header := titleStyle.Render("🌐 Mempool X-Ray") + "\n\n"
+
+	// Footer
+	footer := helpStyle.Render("↑/↓: scroll • PgUp/PgDn: half page • q: quit")
+
+	return header + m.viewport.View() + "\n" + footer
 }

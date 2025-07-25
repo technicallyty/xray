@@ -37,9 +37,9 @@ var (
 	evictedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("208")) // orange
 
 	boxStyle = lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		Padding(0, 1).
-		Width(60)
+			Border(lipgloss.NormalBorder()).
+			Padding(0, 1).
+			Width(60)
 )
 
 func shortenHash(hash string) string {

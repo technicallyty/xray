@@ -99,8 +99,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 var (
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Padding(0, 1)
-	helpStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
+	titleStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Padding(0, 1)
+	sectionTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).Padding(0, 0, 1, 0)
+	helpStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
 )
 
 func (m *Model) updateContent() {
@@ -117,10 +118,14 @@ func (m *Model) updateContent() {
 
 	var allRows []string
 
-	// Process each xray's displays as separate rows
+	// Process each xray's displays as separate sections
 	for _, xray := range m.xrays {
 		displays := xray.Displays()
 		if len(displays) > 0 {
+			// Add section title
+			sectionTitle := sectionTitleStyle.Render(xray.Name())
+			allRows = append(allRows, sectionTitle)
+			
 			// Group this xray's displays into rows
 			for i := 0; i < len(displays); i += boxesPerRow {
 				end := i + boxesPerRow
@@ -130,6 +135,9 @@ func (m *Model) updateContent() {
 				row := lipgloss.JoinHorizontal(lipgloss.Top, displays[i:end]...)
 				allRows = append(allRows, row)
 			}
+			
+			// Add some spacing between sections
+			allRows = append(allRows, "")
 		}
 	}
 

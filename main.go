@@ -29,7 +29,7 @@ func main() {
 
 	m := Model{
 		xrays:       xrays,
-		pollingRate: 1 * time.Second,
+		pollingRate: 500 * time.Millisecond,
 		spinner:     spinner.New(),
 	}
 
@@ -47,13 +47,13 @@ func getXrays(cfg Config) []chain.MempoolXray {
 			if err != nil {
 				log.Fatal(err)
 			}
-			xrays = append(xrays, cosmos.NewCosmosModel(client))
+			xrays = append(xrays, cosmos.NewCosmosModel(client, c.RPCEndpoint))
 		case ChainTypeEthereum:
 			client, err := eth.NewEthereumRPCClient(c.RPCEndpoint)
 			if err != nil {
 				log.Fatal(err)
 			}
-			xrays = append(xrays, eth.NewEthModel(client))
+			xrays = append(xrays, eth.NewEthModel(client, c.RPCEndpoint))
 		}
 	}
 	return xrays

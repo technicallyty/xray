@@ -17,13 +17,15 @@ type EthModel struct {
 	// transactions are a map of poolName -> transactions
 	transactions map[string][]*Transaction
 	completed    []*Transaction
+	name         string
 }
 
-func NewEthModel(client *EthereumRPCClient) *EthModel {
+func NewEthModel(client *EthereumRPCClient, endpoint string) *EthModel {
 	return &EthModel{
 		client:       client,
 		transactions: make(map[string][]*Transaction),
 		completed:    make([]*Transaction, 0),
+		name:         fmt.Sprintf("Ethereum - %s", endpoint),
 	}
 }
 
@@ -131,7 +133,7 @@ func (e *EthModel) Displays() []string {
 		displays = append(displays, boxStyle.Render(content))
 	}
 
-	// Display completed transactions (always show box)
+	// display completed transactions
 	{
 		var lines []string
 		lines = append(lines, fmt.Sprintf("Completed"))
@@ -180,6 +182,10 @@ func (e *EthModel) Displays() []string {
 	return displays
 }
 
+func (e *EthModel) Name() string {
+	return e.name
+}
+
 func (e *EthModel) Update(ctx context.Context) {
 	res, err := e.client.TxPoolContent(ctx)
 	if err != nil {
@@ -203,7 +209,6 @@ func (e *EthModel) Update(ctx context.Context) {
 	}
 
 	// find all transactions in state that no longer exist in transactions
-	// and make a new slice.
 	var removedTransactions []*Transaction
 	for _, txs := range e.transactions {
 		for _, tx := range txs {

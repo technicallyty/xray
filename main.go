@@ -5,11 +5,11 @@ import (
 	"log"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/technicallyty/xray/chain"
 	"github.com/technicallyty/xray/chain/cosmos"
 	"github.com/technicallyty/xray/chain/eth"
+	subscriber "github.com/technicallyty/xray/chain/eth/subsriber"
 )
 
 func main() {
@@ -27,10 +27,9 @@ func main() {
 
 	xrays := getXrays(cfg)
 
-	m := Model{
+	m := &Model{
 		xrays:       xrays,
 		pollingRate: 500 * time.Millisecond,
-		spinner:     spinner.New(),
 	}
 
 	if _, err := tea.NewProgram(m).Run(); err != nil {
@@ -47,13 +46,20 @@ func getXrays(cfg Config) []chain.MempoolXray {
 			if err != nil {
 				log.Fatal(err)
 			}
-			xrays = append(xrays, cosmos.NewCosmosModel(client, c.RPCEndpoint))
+			xrays = append(xrays, cosmos.NewCosmosModel(client, c.RPCEndpoint, c.PollingRate))
 		case ChainTypeEthereum:
 			client, err := eth.NewEthereumRPCClient(c.RPCEndpoint)
 			if err != nil {
 				log.Fatal(err)
 			}
-			xrays = append(xrays, eth.NewEthModel(client, c.RPCEndpoint))
+			xrays = append(xrays, eth.NewEthModel(client, c.RPCEndpoint, c.PollingRate))
+		case ChainTypeETHSub:
+			client, err := subscriber.NewRPCClient(c.RPCEndpoint)
+			if err != nil {
+				log.Fatal(err)
+			}
+			model := subscriber.NewSubModel(client, "eth", 10)
+			xrays = append(xrays, model)
 		}
 	}
 	return xrays

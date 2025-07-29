@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ethereum/go-ethereum/common"
@@ -18,14 +19,16 @@ type EthModel struct {
 	transactions map[string][]*Transaction
 	completed    []*Transaction
 	name         string
+	pollingRate  time.Duration
 }
 
-func NewEthModel(client *EthereumRPCClient, endpoint string) *EthModel {
+func NewEthModel(client *EthereumRPCClient, endpoint string, pollingRate time.Duration) *EthModel {
 	return &EthModel{
 		client:       client,
 		transactions: make(map[string][]*Transaction),
 		completed:    make([]*Transaction, 0),
 		name:         fmt.Sprintf("Ethereum - %s", endpoint),
+		pollingRate:  pollingRate,
 	}
 }
 
@@ -139,14 +142,16 @@ func (e *EthModel) Displays() []string {
 		lines = append(lines, fmt.Sprintf("Completed"))
 		lines = append(lines, strings.Repeat("-", 50))
 
-		// Show last maxTxsPerBox completed transactions
+		// snapshot completed txs
+		completed := make([]*Transaction, len(e.completed))
+		copy(completed, e.completed)
 		start := 0
-		if len(e.completed) > maxTxsPerBox {
-			start = len(e.completed) - maxTxsPerBox
+		if len(completed) > maxTxsPerBox {
+			start = len(completed) - maxTxsPerBox
 		}
 
-		for i := start; i < len(e.completed); i++ {
-			tx := e.completed[i]
+		for i := start; i < len(completed); i++ {
+			tx := completed[i]
 			shortHash := shortenHash(tx.Data.Hash.Hex())
 			gasStr := formatGas(uint64(tx.Data.Gas))
 			prefix := getStatusPrefix(tx.Status)
@@ -186,82 +191,95 @@ func (e *EthModel) Name() string {
 	return e.name
 }
 
-func (e *EthModel) Update(ctx context.Context) {
-	res, err := e.client.TxPoolContent(ctx)
-	if err != nil {
-		//	log.Println("error while fetching transactions:", err)
-		return
-	}
-	txMap := res.ConvertToMap()
-	for poolName, txs := range txMap {
-		slices.SortFunc(txs, func(a, b *Transaction) int {
-			return cmp.Compare(a.Data.Gas, b.Data.Gas)
-		})
-		txMap[poolName] = txs
-	}
-
-	// create a set of current transaction hashes for fast lookup
-	currentTxHashes := make(map[string]bool)
-	for _, txs := range txMap {
-		for _, tx := range txs {
-			currentTxHashes[tx.Data.Hash.Hex()] = true
-		}
-	}
-
-	// find all transactions in state that no longer exist in transactions
-	var removedTransactions []*Transaction
-	for _, txs := range e.transactions {
-		for _, tx := range txs {
-			if !currentTxHashes[tx.Data.Hash.Hex()] {
-				removedTransactions = append(removedTransactions, tx)
+func (e *EthModel) Start(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(e.pollingRate)
+		defer ticker.Stop()
+		for range ticker.C {
+			select {
+			case <-ctx.Done():
+				return
+			default:
 			}
-		}
-	}
 
-	// get receipts for removed transactions and update their status
-	if len(removedTransactions) > 0 {
-		txHashes := make([]common.Hash, len(removedTransactions))
-		for i, tx := range removedTransactions {
-			txHashes[i] = tx.Data.Hash
-		}
-
-		receipts, err := e.client.BatchTransactionReceipts(ctx, txHashes)
-		if err != nil {
-			// log.Println("error while fetching transaction receipts:", err)
-			// When receipt fetch fails, assume transactions were evicted from mempool
-			for i := range removedTransactions {
-				removedTransactions[i].Status = StatusTypeEvicted
+			// get tx pool contents.
+			res, err := e.client.TxPoolContent(ctx)
+			if err != nil {
+				continue
 			}
-		} else {
-			// update transaction status based on receipt
-			for i, receipt := range receipts {
-				if receipt == nil {
-					// transaction not found, likely failed or dropped
-					removedTransactions[i].Status = StatusTypeEvicted
-				} else if receipt.Status == 1 {
-					// transaction successful
-					removedTransactions[i].Status = StatusTypeSuccess
-				} else {
-					// transaction failed
-					removedTransactions[i].Status = StatusTypeFailed
+			txMap := res.ConvertToMap()
+			for poolName, txs := range txMap {
+				slices.SortFunc(txs, func(a, b *Transaction) int {
+					return a.Data.Hash.Cmp(b.Data.Hash)
+				})
+				txMap[poolName] = txs
+			}
+
+			// create a set of current transaction hashes for fast lookup
+			currentTxHashes := make(map[string]bool)
+			for _, txs := range txMap {
+				for _, tx := range txs {
+					currentTxHashes[tx.Data.Hash.Hex()] = true
 				}
 			}
-		}
-		// append removed transactions to completed
-		e.completed = append(e.completed, removedTransactions...)
-		slices.SortFunc(e.completed, func(a, b *Transaction) int {
-			return cmp.Compare(a.Data.Gas, b.Data.Gas)
-		})
 
-		// Keep only the last 50 completed transactions
-		const maxCompleted = 50
-		if len(e.completed) > maxCompleted {
-			e.completed = e.completed[len(e.completed)-maxCompleted:]
-		}
-	}
+			// find all transactions in state that no longer exist
+			var removedTransactions []*Transaction
+			for _, txs := range e.transactions {
+				for _, tx := range txs {
+					if !currentTxHashes[tx.Data.Hash.Hex()] {
+						removedTransactions = append(removedTransactions, tx)
+					}
+				}
+			}
 
-	// update state with new transactions
-	e.transactions = txMap
+			// get receipts for removed transactions and update their status
+			if len(removedTransactions) > 0 {
+				txHashes := make([]common.Hash, len(removedTransactions))
+				for i, tx := range removedTransactions {
+					txHashes[i] = tx.Data.Hash
+				}
+
+				receipts, err := e.client.BatchTransactionReceipts(ctx, txHashes)
+				if err != nil {
+					// log.Println("error while fetching transaction receipts:", err)
+					// When receipt fetch fails, assume transactions were evicted from mempool
+					for i := range removedTransactions {
+						removedTransactions[i].Status = StatusTypeEvicted
+					}
+				} else {
+					// update transaction status based on receipt
+					for i, receipt := range receipts {
+						if receipt == nil {
+							// transaction not found, likely failed or dropped
+							removedTransactions[i].Status = StatusTypeEvicted
+						} else if receipt.Status == 1 {
+							// transaction successful
+							removedTransactions[i].Status = StatusTypeSuccess
+						} else {
+							// transaction failed
+							removedTransactions[i].Status = StatusTypeFailed
+						}
+					}
+				}
+				// append removed transactions to completed
+				e.completed = append(e.completed, removedTransactions...)
+				slices.SortFunc(e.completed, func(a, b *Transaction) int {
+					return cmp.Compare(a.Data.Gas, b.Data.Gas)
+				})
+
+				// Keep only the last 50 completed transactions
+				const maxCompleted = 50
+				if len(e.completed) > maxCompleted {
+					e.completed = e.completed[len(e.completed)-maxCompleted:]
+				}
+			}
+
+			// update state with new transactions
+			e.transactions = txMap
+		}
+	}()
+
 }
 
 var _ chain.MempoolXray = &EthModel{}

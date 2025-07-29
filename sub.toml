@@ -1,0 +1,3 @@
+[[chain_configs]]
+chain_type = "eth_sub"
+rpc_endpoint = "wss://ethereum-rpc.publicnode.com"

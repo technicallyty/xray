@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -22,38 +21,31 @@ func tickCmd(pollingRate time.Duration) tea.Cmd {
 type Model struct {
 	xrays       []chain.MempoolXray
 	pollingRate time.Duration
-	spinner     spinner.Model
 	viewport    viewport.Model
 	ready       bool
 	content     string // Cache content to avoid resetting viewport
+	cancel      context.CancelFunc
 }
 
-func (m *Model) pollCmd() tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		for _, xray := range m.xrays {
-			xray.Update(ctx)
-		}
-		return nil
+func (m *Model) Init() tea.Cmd {
+	for _, xray := range m.xrays {
+		ctx, cancel := context.WithCancel(context.Background())
+		m.cancel = cancel
+		xray.Start(ctx)
 	}
-}
-
-func (m Model) Init() tea.Cmd {
 	return tea.Batch(
-		m.pollCmd(),
 		tickCmd(m.pollingRate),
 	)
 }
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var (
 		cmd  tea.Cmd
 		cmds []tea.Cmd
 	)
 
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
+	case tea.WindowSizeMsg: // window resizing
 		headerHeight := 4 // Title + help text
 		if !m.ready {
 			m.viewport = viewport.New(msg.Width, msg.Height-headerHeight)
@@ -67,31 +59,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Update content layout when window resizes
 			m.updateContent()
 		}
-
-	case tea.KeyMsg:
+	case tea.KeyMsg: // handles keypress
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
+			m.cancel()
 			return m, tea.Quit
 		case "up", "k":
-			m.viewport.LineUp(1)
+			m.viewport.ScrollUp(1)
 		case "down", "j":
-			m.viewport.LineDown(1)
+			m.viewport.ScrollDown(1)
 		case "pgup", "b":
-			m.viewport.HalfViewUp()
+			m.viewport.HalfPageUp()
 		case "pgdown", "f":
-			m.viewport.HalfViewDown()
+			m.viewport.HalfPageDown()
 		}
-
-	case tickMsg:
+	case tickMsg: // handles updating UI
 		// Update content when data changes
 		m.updateContent()
-		cmds = append(cmds, m.pollCmd(), tickCmd(m.pollingRate))
-	case spinner.TickMsg:
-		m.spinner, cmd = m.spinner.Update(msg)
-		cmds = append(cmds, cmd)
+		cmds = append(cmds, tickCmd(m.pollingRate))
 	}
 
-	// Handle viewport
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
 
@@ -99,9 +86,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 var (
-	titleStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Padding(0, 1)
+	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Padding(0, 1)
 	sectionTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).Padding(0, 0, 1, 0)
-	helpStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
+	helpStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
 )
 
 func (m *Model) updateContent() {
@@ -125,7 +112,7 @@ func (m *Model) updateContent() {
 			// Add section title
 			sectionTitle := sectionTitleStyle.Render(xray.Name())
 			allRows = append(allRows, sectionTitle)
-			
+
 			// Group this xray's displays into rows
 			for i := 0; i < len(displays); i += boxesPerRow {
 				end := i + boxesPerRow
@@ -135,7 +122,7 @@ func (m *Model) updateContent() {
 				row := lipgloss.JoinHorizontal(lipgloss.Top, displays[i:end]...)
 				allRows = append(allRows, row)
 			}
-			
+
 			// Add some spacing between sections
 			allRows = append(allRows, "")
 		}

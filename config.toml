@@ -1,7 +1,9 @@
 [[chain_configs]]
 chain_type = "eth"
 rpc_endpoint = "https://ethereum-rpc.publicnode.com"
+polling_rate = "50ms"
 
 [[chain_configs]]
 chain_type = "cosmos"
 rpc_endpoint = "https://rpc.cosmos.directory/cosmoshub"
+polling_rate = "50ms"

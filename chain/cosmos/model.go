@@ -16,10 +16,11 @@ import (
 )
 
 type CosmosTransaction struct {
-	Hash          string
-	Tx            *tx.Tx
-	Status        StatusType
-	TimeCompleted time.Time
+	Hash            string
+	Tx              *tx.Tx
+	Status          StatusType
+	TimeCompleted   time.Time
+	HeightCompleted int64
 }
 
 type StatusType string
@@ -37,14 +38,16 @@ type CosmosModel struct {
 	transactions map[string]*CosmosTransaction // hash -> transaction
 	completed    []*CosmosTransaction
 	name         string
+	pollingRate  time.Duration
 }
 
-func NewCosmosModel(client *CosmosRPCClient, endpoint string) *CosmosModel {
+func NewCosmosModel(client *CosmosRPCClient, endpoint string, pollingRate time.Duration) *CosmosModel {
 	return &CosmosModel{
 		client:       client,
 		transactions: make(map[string]*CosmosTransaction),
 		completed:    make([]*CosmosTransaction, 0),
 		name:         fmt.Sprintf("Cosmos - %s", endpoint),
+		pollingRate:  pollingRate,
 	}
 }
 
@@ -57,9 +60,9 @@ var (
 	fadedStyleCosmos     = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Faint(true) // dim gray and faded
 
 	boxStyleCosmos = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			Padding(0, 1).
-			Width(60)
+		Border(lipgloss.NormalBorder()).
+		Padding(0, 1).
+		Width(60)
 )
 
 func getStatusPrefixCosmos(status StatusType) string {
@@ -111,77 +114,96 @@ func formatMessageTypes(tx *tx.Tx) string {
 	return strings.Join(msgTypes, ", ")
 }
 
-func (c *CosmosModel) Update(ctx context.Context) {
-	currentTxs, err := c.client.MempoolTxs(ctx, 1000)
-	if err != nil {
-		return
-	}
+func (c *CosmosModel) Start(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(c.pollingRate)
+		defer ticker.Stop()
 
-	currentTxHashes := make(map[string]bool)
-	currentTxMap := make(map[string]*CosmosTransaction)
-	currentRemovedTxs := make(map[string]bool)
-
-	for _, tx := range currentTxs {
-		hash := getTxHash(tx)
-		currentTxHashes[hash] = true
-		currentTxMap[hash] = &CosmosTransaction{
-			Hash:   hash,
-			Tx:     tx,
-			Status: StatusTypeInMempool,
-		}
-	}
-
-	for _, tx := range c.completed {
-		currentRemovedTxs[tx.Hash] = true
-	}
-
-	// find transactions that are no longer in mempool
-	var removedTransactions []*CosmosTransaction
-	for hash, tx := range c.transactions {
-		if !currentTxHashes[hash] && !currentRemovedTxs[tx.Hash] {
-			tx.TimeCompleted = time.Now()
-			removedTransactions = append(removedTransactions, tx)
-		}
-	}
-
-	// check status of removed transactions
-	if len(removedTransactions) > 0 {
-		txHashes := make([]string, len(removedTransactions))
-		for i, tx := range removedTransactions {
-			txHashes[i] = tx.Hash
-		}
-
-		results, err := c.client.BatchTxStatus(ctx, txHashes)
-		if err != nil {
-			// error, assume transactions were evicted
-			for i := range removedTransactions {
-				removedTransactions[i].Status = StatusTypeUnknown
+		for range ticker.C {
+			select {
+			case <-ctx.Done():
+				return
+			default:
 			}
-		} else {
-			for i, result := range results {
-				if result == nil {
-					// tx not found, likely evicted
-					removedTransactions[i].Status = StatusTypeUnknown
-				} else {
-					z, ok := result.TxResult.(types.ExecTxResult)
-					if ok && z.Code == types.CodeTypeOK {
-						removedTransactions[i].Status = StatusTypeSuccess
-					} else {
-						removedTransactions[i].Status = StatusTypeFailed
-					}
+			currentTxs, err := c.client.MempoolTxs(ctx, 1000)
+			if err != nil {
+				continue
+			}
+
+			currentTxHashes := make(map[string]bool)
+			currentTxMap := make(map[string]*CosmosTransaction)
+			currentRemovedTxs := make(map[string]bool)
+
+			for _, tx := range currentTxs {
+				hash := getTxHash(tx)
+				currentTxHashes[hash] = true
+				currentTxMap[hash] = &CosmosTransaction{
+					Hash:   hash,
+					Tx:     tx,
+					Status: StatusTypeInMempool,
 				}
 			}
+
+			for _, tx := range c.completed {
+				currentRemovedTxs[tx.Hash] = true
+			}
+
+			// find transactions that are no longer in mempool
+			var removedTransactions []*CosmosTransaction
+			for hash, tx := range c.transactions {
+				if !currentTxHashes[hash] && !currentRemovedTxs[tx.Hash] {
+					tx.TimeCompleted = time.Now()
+					removedTransactions = append(removedTransactions, tx)
+				}
+			}
+
+			// check status of removed transactions
+			if len(removedTransactions) > 0 {
+				txHashes := make([]string, len(removedTransactions))
+				for i, tx := range removedTransactions {
+					txHashes[i] = tx.Hash
+				}
+
+				var x int
+			line:
+				results, err := c.client.BatchTxStatus(ctx, txHashes)
+				if err != nil {
+					// error, assume transactions were evicted
+					for i := range removedTransactions {
+						removedTransactions[i].Status = StatusTypeUnknown
+					}
+					x++
+					if x < 5 {
+						goto line
+					}
+				} else {
+					for i, result := range results {
+						if result == nil {
+							// tx not found, likely evicted
+							removedTransactions[i].Status = StatusTypeUnknown
+						} else {
+							z, ok := result.TxResult.(types.ExecTxResult)
+							if ok && z.Code == types.CodeTypeOK {
+								removedTransactions[i].Status = StatusTypeSuccess
+								removedTransactions[i].HeightCompleted = result.Height
+							} else {
+								removedTransactions[i].Status = StatusTypeFailed
+							}
+						}
+					}
+				}
+
+				c.completed = append(c.completed, removedTransactions...)
+
+				const maxCompleted = 50
+				if len(c.completed) > maxCompleted {
+					c.completed = c.completed[len(c.completed)-maxCompleted:]
+				}
+			}
+
+			c.transactions = currentTxMap
 		}
-
-		c.completed = append(c.completed, removedTransactions...)
-
-		const maxCompleted = 50
-		if len(c.completed) > maxCompleted {
-			c.completed = c.completed[len(c.completed)-maxCompleted:]
-		}
-	}
-
-	c.transactions = currentTxMap
+	}()
 }
 
 func (c *CosmosModel) Displays() []string {
@@ -234,6 +256,8 @@ func (c *CosmosModel) Displays() []string {
 
 		completed := make([]*CosmosTransaction, len(c.completed))
 		copy(completed, c.completed)
+
+		// there may be duplicates, so here we normalize them by using a set.
 		set := map[string]*CosmosTransaction{}
 		for _, tx := range completed {
 			set[tx.Hash] = tx
@@ -260,7 +284,13 @@ func (c *CosmosModel) Displays() []string {
 			msgTypes := formatMessageTypes(tx.Tx)
 			prefix := getStatusPrefixCosmos(tx.Status)
 
-			line := fmt.Sprintf("%s%s | %s | %d", prefix, shortHash, msgTypes, tx.Tx.AuthInfo.SignerInfos[0].Sequence)
+			var sequence string
+			if len(tx.Tx.AuthInfo.SignerInfos) > 0 {
+				sequence = fmt.Sprintf("%d", tx.Tx.AuthInfo.SignerInfos[0].Sequence)
+			} else {
+				sequence = "?"
+			}
+			line := fmt.Sprintf("%s%s | %s | %s	| Height %d", prefix, shortHash, msgTypes, sequence, tx.HeightCompleted)
 
 			// Apply styling based on status
 			switch tx.Status {

@@ -3,9 +3,11 @@ package chain
 import "context"
 
 type MempoolXray interface {
-	// Update your internal state of the mempool
-	Update(ctx context.Context)
+	// Start starts the service. Services should use the start method to kick off polling/subscribing in a go routine.
+	// Services should update their state in Start.
+	Start(ctx context.Context)
+	// Displays returns data to display. This should display the data collected in Start.
 	Displays() []string
-	// Name returns the display name for this chain (e.g., "Ethereum - https://rpc.endpoint")
+	// Name is the name of the service.
 	Name() string
 }

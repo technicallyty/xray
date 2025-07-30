@@ -1,9 +1,9 @@
 [[chain_configs]]
 chain_type = "eth"
 rpc_endpoint = "http://localhost:8545"
-polling_rate = "100ms"
+polling_rate = "50ms"
 
 [[chain_configs]]
 chain_type = "cosmos"
 rpc_endpoint = "http://localhost:26657"
-polling_rate = "100ms"
+polling_rate = "50ms"

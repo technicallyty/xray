@@ -2,6 +2,8 @@
 
 A look into the mysterious mempools.
 
+![App screenshot](https://github.com/user-attachments/assets/ac34806c-5e73-47da-a036-610319a389a8)
+
 ## Build
 
 `go build .`

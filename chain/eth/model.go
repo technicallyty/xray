@@ -16,10 +16,11 @@ import (
 type EthModel struct {
 	client *EthereumRPCClient
 	// transactions are a map of poolName -> transactions
-	transactions map[string][]*Transaction
-	completed    []*Transaction
-	name         string
-	pollingRate  time.Duration
+	transactions   map[string][]*Transaction
+	completed      []*Transaction
+	totalCompleted uint64
+	name           string
+	pollingRate    time.Duration
 }
 
 func NewEthModel(client *EthereumRPCClient, endpoint string, pollingRate time.Duration) *EthModel {
@@ -40,9 +41,9 @@ var (
 	evictedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("208")) // orange
 
 	boxStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			Padding(0, 1).
-			Width(60)
+		Border(lipgloss.NormalBorder()).
+		Padding(0, 1).
+		Width(60)
 )
 
 func shortenHash(hash string) string {
@@ -139,7 +140,7 @@ func (e *EthModel) Displays() []string {
 	// display completed transactions
 	{
 		var lines []string
-		lines = append(lines, fmt.Sprintf("Completed"))
+		lines = append(lines, fmt.Sprintf("Completed (%d txs)", e.totalCompleted))
 		lines = append(lines, strings.Repeat("-", 50))
 
 		// snapshot completed txs
@@ -263,6 +264,7 @@ func (e *EthModel) Start(ctx context.Context) {
 					}
 				}
 				// append removed transactions to completed
+				e.totalCompleted += uint64(len(removedTransactions))
 				e.completed = append(e.completed, removedTransactions...)
 				slices.SortFunc(e.completed, func(a, b *Transaction) int {
 					return cmp.Compare(a.Data.Gas, b.Data.Gas)
